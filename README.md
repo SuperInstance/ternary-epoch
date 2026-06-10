@@ -1,66 +1,60 @@
 # ternary-epoch
 
-**Detect regime changes in ternary signals. When did the era change?**
+Epoch detection and lifecycle management for ternary state histories.
 
-History isn't smooth — it has *epochs*. Long stretches of stability punctuated by sudden transitions. A stock market has bull and bear epochs. A conversation has topics. A system has operational modes. This crate detects those boundaries in ternary signals: runs of `+1`, stretches of `0`, periods of `-1`, and the exact tick where one era ends and another begins.
+## Why This Exists
 
-## What's Inside
+During ternary training or simulation, you observe sequences of {-1, 0, +1} values over time. These sequences naturally form epochs — periods where the state stays the same before transitioning. Detecting epoch boundaries, computing durations, and analyzing transition patterns between states is essential for understanding training dynamics, convergence behavior, and system stability. This crate provides lightweight epoch detection on raw ternary histories.
 
-- **`Epoch`** — a time period with `start_tick`, `dominant_state`, and `stability` measure
-- **`detect_epochs(history, min_length)`** — find stable runs in a ternary signal. Minimum length filters noise
-- **`epoch_boundary(history)`** — find the exact indices where state changes
-- **`current_epoch(epochs, tick)`** — given a tick, which epoch are we in?
-- **`epoch_duration(epochs)`** — how long did each era last?
-- **`transition_matrix(epochs)`** — build a 3×3 Markov transition matrix from epoch sequence. How often does `-1` → `+1`? Does `0` always follow `+1`?
+## Architecture
 
-## Quick Example
+### Core Types
+
+- **`Epoch`** — A time segment: `start_tick`, `end_tick`, `state` (i8).
+- **`detect_epochs`** — Scans a history array and returns contiguous segments of the same value.
+- **`epoch_boundary`** — Returns tick indices where state changes.
+- **`transition_matrix`** — Builds a 3×3 Markov transition probability matrix from epoch sequences.
+
+## Usage
 
 ```rust
 use ternary_epoch::*;
 
-// A signal with clear regime changes
-let history: Vec<i8> = vec![1,1,1,1, -1,-1,-1, 0,0,0,0,0, 1,1];
+let history = [1, 1, 1, 0, 0, -1, -1, -1, -1, 0i8];
 
-let epochs = detect_epochs(&history, 2);
-// Four epochs: [+1], [-1], [0], [+1]
+let epochs = detect_epochs(&history, 1);
+// [Epoch{1, 2, 1}, Epoch{3, 4, 0}, Epoch{5, 8, -1}, Epoch{9, 9, 0}]
 
 let boundaries = epoch_boundary(&history);
-// [4, 7, 12] — where transitions happen
+// [3, 5, 9] — ticks where state changed
 
-// Which epoch is tick 5 in?
-let current = current_epoch(&epochs, 5);
-assert_eq!(current.unwrap().dominant_state, -1);
+let transitions = transition_matrix(&epochs);
+// P(state_j | state_i) — useful for Markov chain analysis
 
-// How often does each transition happen?
-let matrix = transition_matrix(&epochs);
-// matrix[i][j] = P(state_j | state_i)
-// Discover hidden dynamics in your signal
+// Find current epoch at a given tick
+let current = current_epoch(&epochs, 6);
+assert_eq!(current.unwrap().state, -1);
+
+let durations = epoch_duration(&epochs);
 ```
 
-## The Insight
+## API Reference
 
-**Epochs reveal timescale structure.** A ternary signal might look random tick-by-tick, but at the epoch level, it tells a story: first expansion (+1), then contraction (-1), then stagnation (0), then expansion again. The transition matrix captures the *grammar* of that story — which regimes follow which, and how predictable the sequence is.
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `new(tick, state)` | `Epoch` | Create an epoch |
+| `detect_epochs(history, min_length)` | `Vec<Epoch>` | Find contiguous state segments |
+| `epoch_boundary(history)` | `Vec<usize>` | Indices where state changes |
+| `current_epoch(epochs, tick)` | `Option<&Epoch>` | Epoch at given tick |
+| `epoch_duration(epochs)` | `Vec<u64>` | Duration of each epoch |
+| `transition_matrix(epochs)` | `[[f64; 3]; 3]` | Markov transition probabilities |
 
-**Use cases:**
-- **Time series analysis** — detect regime changes in discretized signals
-- **System monitoring** — when did the server enter error mode? When did it recover?
-- **Market microstructure** — bull/bear/flat regime detection
-- **Conversation analysis** — topic boundaries in dialogue systems
-- **Game AI** — detect when the player's strategy changes epoch
+## The Deeper Idea
 
-## See Also
+Epoch detection is **change-point analysis for ternary time series**. In continuous-valued time series, change-point detection is hard (you need statistical tests). In ternary time series, it's trivial: the value changed or it didn't. This means you can do real-time epoch tracking with zero computation — just compare current to previous. The transition matrix then gives you the full Markov model of your system's dynamics, which is useful for predicting how long the current state will persist and when to expect the next transition.
 
-- **ternary-markov** — Markov chain prediction on ternary sequences
-- **ternary-dynamics** — full dynamical systems analysis
-- **ternary-entropy** — information content at epoch boundaries
-- **ternary-loop** — periodic epoch patterns
+## Related Crates
 
-## Install
-
-```bash
-cargo add ternary-epoch
-```
-
-## License
-
-MIT
+- **ternary-accumulator** — gradient accumulation for ternary training
+- **ternary-chaos** — chaos theory and dynamics in ternary systems
+- **ternary-automata** — cellular automata with ternary states

@@ -1,60 +1,89 @@
-# ternary-epoch
+# Ternary Epoch — Epoch Detection and Transition Analysis for Ternary Time Series
 
-Epoch detection and lifecycle management for ternary state histories.
+**Ternary Epoch** detects epochs (periods of stable state) in ternary-valued time series, analyzes transitions between epochs, and builds Markov transition matrices. It segments history into runs where a single ternary value {-1, 0, +1} dominates, measures epoch durations, and computes the probability of transitioning between states.
 
-## Why This Exists
+## Why It Matters
 
-During ternary training or simulation, you observe sequences of {-1, 0, +1} values over time. These sequences naturally form epochs — periods where the state stays the same before transitioning. Detecting epoch boundaries, computing durations, and analyzing transition patterns between states is essential for understanding training dynamics, convergence behavior, and system stability. This crate provides lightweight epoch detection on raw ternary histories.
+Complex systems pass through phases — stable periods punctuated by transitions. Detecting these epochs in ternary time series (agent states, GPU utilization, consensus outcomes) is essential for understanding system dynamics. The transition matrix reveals whether the system is bistable (oscillating between two states), tri-stable (cycling through all three), or monostable (stuck in one state). In fleet management, epoch analysis answers questions like "how often does the fleet enter the neutral (0) state?" and "what's the probability of recovering from a -1 epoch?" — questions that directly inform fleet health assessment.
 
-## Architecture
+## How It Works
 
-### Core Types
+### Epoch Detection
 
-- **`Epoch`** — A time segment: `start_tick`, `end_tick`, `state` (i8).
-- **`detect_epochs`** — Scans a history array and returns contiguous segments of the same value.
-- **`epoch_boundary`** — Returns tick indices where state changes.
-- **`transition_matrix`** — Builds a 3×3 Markov transition probability matrix from epoch sequences.
+Scans the history for runs of the same value. A run becomes an epoch if it lasts at least `min_length` ticks:
 
-## Usage
-
-```rust
-use ternary_epoch::*;
-
-let history = [1, 1, 1, 0, 0, -1, -1, -1, -1, 0i8];
-
-let epochs = detect_epochs(&history, 1);
-// [Epoch{1, 2, 1}, Epoch{3, 4, 0}, Epoch{5, 8, -1}, Epoch{9, 9, 0}]
-
-let boundaries = epoch_boundary(&history);
-// [3, 5, 9] — ticks where state changed
-
-let transitions = transition_matrix(&epochs);
-// P(state_j | state_i) — useful for Markov chain analysis
-
-// Find current epoch at a given tick
-let current = current_epoch(&epochs, 6);
-assert_eq!(current.unwrap().state, -1);
-
-let durations = epoch_duration(&epochs);
+```
+detect_epochs(history, min_length):
+  for each run of identical values:
+    if run.length >= min_length:
+      emit Epoch { start_tick, dominant_state, stability: 1.0 }
 ```
 
-## API Reference
+This is a single-pass O(n) algorithm. The `min_length` filter suppresses noise — transient blips that don't represent true state changes.
 
-| Function | Returns | Description |
-|----------|---------|-------------|
-| `new(tick, state)` | `Epoch` | Create an epoch |
-| `detect_epochs(history, min_length)` | `Vec<Epoch>` | Find contiguous state segments |
-| `epoch_boundary(history)` | `Vec<usize>` | Indices where state changes |
-| `current_epoch(epochs, tick)` | `Option<&Epoch>` | Epoch at given tick |
-| `epoch_duration(epochs)` | `Vec<u64>` | Duration of each epoch |
-| `transition_matrix(epochs)` | `[[f64; 3]; 3]` | Markov transition probabilities |
+### Boundary Detection
 
-## The Deeper Idea
+`epoch_boundary()` returns the indices where the value changes. This is O(n) and useful for identifying exact transition points for further analysis.
 
-Epoch detection is **change-point analysis for ternary time series**. In continuous-valued time series, change-point detection is hard (you need statistical tests). In ternary time series, it's trivial: the value changed or it didn't. This means you can do real-time epoch tracking with zero computation — just compare current to previous. The transition matrix then gives you the full Markov model of your system's dynamics, which is useful for predicting how long the current state will persist and when to expect the next transition.
+### Transition Matrix
 
-## Related Crates
+From the sequence of epochs, builds a 3×3 Markov chain:
 
-- **ternary-accumulator** — gradient accumulation for ternary training
-- **ternary-chaos** — chaos theory and dynamics in ternary systems
-- **ternary-automata** — cellular automata with ternary states
+```
+         to -1   to 0   to +1
+from -1 [ p₀₀   p₀₁    p₀₂  ]
+from  0 [ p₁₀   p₁₁    p₁₂  ]
+from +1 [ p₂₀   p₂₁    p₂₂  ]
+```
+
+where pᵢⱼ = count(i→j) / count(i→*). This reveals the system's state dynamics: are transitions balanced (uniform) or biased (e.g., always exit 0 toward +1)?
+
+### Epoch Duration
+
+Measures how long each epoch lasts. Long durations indicate stability; short durations indicate turbulence. The distribution of durations follows a power law for critical systems and is exponential for chaotic systems.
+
+### Current Epoch Lookup
+
+`current_epoch(epochs, tick)` finds the most recent epoch whose start ≤ tick — O(e) for e epochs, or O(log e) with binary search.
+
+## Quick Start
+
+```rust
+use ternary_epoch::{detect_epochs, transition_matrix, epoch_boundary};
+
+let history: Vec<i8> = vec![1, 1, 1, -1, -1, 0, 0, 0, 0, 1, 1];
+let epochs = detect_epochs(&history, 2); // min 2 ticks per epoch
+let boundaries = epoch_boundary(&history);
+let matrix = transition_matrix(&epochs);
+
+println!("Detected {} epochs with {} transitions", epochs.len(), boundaries.len());
+```
+
+```bash
+cargo add ternary-epoch
+```
+
+## API
+
+| Type / Function | Description |
+|---|---|
+| `Epoch` | `{ start_tick, dominant_state, stability }` |
+| `detect_epochs(history, min_length)` | Segment into stable runs (O(n)) |
+| `epoch_boundary(history)` | Indices where value changes |
+| `transition_matrix(epochs)` | 3×3 Markov chain (O(e)) |
+| `epoch_duration(epochs)` | Duration of each epoch |
+| `current_epoch(epochs, tick)` | Most recent epoch at given tick |
+
+## Architecture Notes
+
+Epoch analysis reveals the long-term behavior of **SuperInstance** fleets. Healthy fleets show balanced transitions across {-1, 0, +1}; degraded fleets fixate on one state. The γ + η = C conservation law predicts that epochs of high γ (growth) alternate with epochs of high η (entropy) — the transition matrix captures this rhythm. See [Architecture](https://github.com/SuperInstance/SuperInstance/blob/main/ARCHITECTURE.md).
+
+## References
+
+- Norris, J. R. *Markov Chains*, Cambridge UP, 1997 — Markov chain theory.
+- Kantz, Holger & Schreiber, Thomas. *Nonlinear Time Series Analysis*, 2nd ed., Cambridge UP, 2004.
+- Gershenfeld, Neil. *The Nature of Mathematical Modeling*, Cambridge UP, 1998 — epoch detection and segmentation.
+
+## License
+
+MIT
